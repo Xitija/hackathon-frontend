@@ -48,7 +48,7 @@ const TranscriptionWithAssemblyAI = () => {
   };
 
   const sendToAssemblyAI = async (audioBlob) => {
-    const apiKey = "API_KEY";
+    const apiKey = "API_KEY"; // Replace with actual API_KEY
 
     // Step 1: Upload audio
     const uploadResponse = await fetch("https://api.assemblyai.com/v2/upload", {
