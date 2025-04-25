@@ -1,92 +1,122 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-const TranscriptionApp = () => {
-  const [transcript, setTranscript] = useState("");
-  const [isListening, setIsListening] = useState(false);
-  const [error, setError] = useState(null);
-  const recognitionRef = useRef(null); // Use useRef to persist recognition instance
+const TranscriptionWithAssemblyAI = () => {
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const [isRecording, setIsRecording] = useState(false);
 
-  // Initialize SpeechRecognition
   useEffect(() => {
-    if (
-      !("webkitSpeechRecognition" in window || "SpeechRecognition" in window)
-    ) {
-      setError("Speech Recognition API is not supported in this browser.");
-      return;
-    }
-
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-IN"; // "en-US";
-
-    recognition.onresult = (event) => {
-      let interimTranscript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcriptChunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          setTranscript((prev) => prev + transcriptChunk);
-        } else {
-          interimTranscript += transcriptChunk;
-        }
-      }
-    };
-
-    recognition.onerror = (event) => {
-      setError(`Error occurred: ${event.error}`);
-    };
-
-    recognitionRef.current = recognition; // Store the recognition instance in useRef
-
     return () => {
-      recognition.stop();
+      stopRecording();
     };
   }, []);
 
-  const startListening = () => {
-    if (recognitionRef.current) {
-      setIsListening(true);
-      recognitionRef.current.start();
-    }
+  const startRecording = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = async () => {
+      const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      await sendToAssemblyAI(audioBlob);
+      audioChunksRef.current = [];
+    };
+
+    mediaRecorder.start();
+
+    setInterval(() => {
+      if (mediaRecorder.state === "recording") {
+        mediaRecorder.stop(); // stop current chunk
+        mediaRecorder.start(); // immediately start next chunk
+      }
+    }, 20000); // every 60 seconds
+
+    setIsRecording(true);
   };
 
-  const stopListening = () => {
-    if (recognitionRef.current) {
-      setIsListening(false);
-      recognitionRef.current.stop();
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  };
+
+  const sendToAssemblyAI = async (audioBlob) => {
+    const apiKey = "API_KEY";
+
+    // Step 1: Upload audio
+    const uploadResponse = await fetch("https://api.assemblyai.com/v2/upload", {
+      method: "POST",
+      headers: { authorization: apiKey },
+      body: audioBlob,
+    });
+
+    const { upload_url } = await uploadResponse.json();
+
+    // Step 2: Request transcription
+    const transcriptResponse = await fetch("https://api.assemblyai.com/v2/transcript", {
+      method: "POST",
+      headers: {
+        authorization: apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ audio_url: upload_url }),
+    });
+
+    const transcriptData = await transcriptResponse.json();
+
+    // Step 3: Poll for result
+    let completedTranscript = null;
+    while (!completedTranscript) {
+      const pollingResponse = await fetch(
+        `https://api.assemblyai.com/v2/transcript/${transcriptData.id}`,
+        {
+          headers: { authorization: apiKey },
+        }
+      );
+      const pollingData = await pollingResponse.json();
+      if (pollingData.status === "completed") {
+        completedTranscript = pollingData.text;
+
+        // Send final transcript to your backend API
+        await fetch("https://your-api.com/save-transcript", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript: completedTranscript }),
+        });
+      } else if (pollingData.status === "failed") {
+        console.error("Transcription failed");
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 3000)); // wait 3s before polling again
     }
   };
 
   return (
-    <div className="p-4 max-w-md mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Real-Time Transcription</h1>
-      <textarea
-        className="w-full h-40 p-2 border rounded"
-        value={transcript}
-        readOnly
-        placeholder="Your transcription will appear here..."
-      />
-      <div className="mt-4 flex gap-2">
-        <button
-          onClick={startListening}
-          disabled={isListening}
-          className="px-4 py-2 bg-blue-500 text-white rounded disabled:opacity-50"
-        >
-          Start
-        </button>
-        <button
-          onClick={stopListening}
-          disabled={!isListening}
-          className="px-4 py-2 bg-red-500 text-white rounded disabled:opacity-50"
-        >
-          Stop
-        </button>
-      </div>
-      {error && <p className="text-red-500 mt-2">{error}</p>}
+    <div className="p-4">
+      <h2 className="text-xl font-bold mb-4">AssemblyAI Real-Time Transcription</h2>
+      <button
+        onClick={startRecording}
+        disabled={isRecording}
+        className="bg-blue-600 text-white px-4 py-2 rounded"
+      >
+        Start Interview
+      </button>
+      <button
+        onClick={stopRecording}
+        disabled={!isRecording}
+        className="bg-red-600 text-white px-4 py-2 ml-2 rounded"
+      >
+        Stop Interview
+      </button>
     </div>
   );
 };
 
-export default TranscriptionApp;
+export default TranscriptionWithAssemblyAI;
